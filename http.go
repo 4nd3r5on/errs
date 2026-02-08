@@ -3,25 +3,22 @@ package errs
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
+	"errors"
+	"fmt"
 	"net/http"
-
-	"github.com/cockroachdb/errors"
 )
 
 func GetHTTPCode(err error) int {
 	switch {
 	case errors.Is(err, ErrNotImplemented):
 		return http.StatusNotImplemented
-	case errors.Is(err, ErrInternal):
-		return http.StatusInternalServerError
-	case errors.Is(err, ErrDeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout
 	case errors.Is(err, ErrRemoteServiceErr):
 		return http.StatusBadGateway
 	case errors.Is(err, ErrRateLimited):
 		return http.StatusTooManyRequests
-	case errors.IsAny(err,
+	case IsAny(err,
 		ErrInvalidArgument,
 		ErrMissingArgument,
 		ErrOutOfRange,
@@ -31,111 +28,86 @@ func GetHTTPCode(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, ErrUnauthorized):
 		return http.StatusUnauthorized
-	case errors.IsAny(err, ErrExists, ErrOutdated):
+	case IsAny(err, ErrExists, ErrOutdated):
 		return http.StatusConflict
 	case errors.Is(err, ErrNotFound):
 		return http.StatusNotFound
 	default:
-		// ErrInternal
-		// ErrCanceled
-		// ErrOOM
 		return http.StatusInternalServerError
 	}
 }
 
-// HTTPErrResponse is the standard JSON error response body
-type HTTPErrResponse struct {
-	Error string      `json:"error"`                 // User-facing message
-	Code  string      `json:"code,omitempty"`        // Machine-readable error code
-	Hints []string    `json:"hints,omitempty"`       // User-facing suggestions
-	Links []IssueLink `json:"issue_links,omitempty"` // Bug tracker references
+type ErrorHTTPResponse struct {
+	Message string `json:"message"`
+	Details any    `json:"details,omitempty"`
 }
 
-type HandleHTTPErrOpts struct {
-	Logger   *slog.Logger
-	LogLevel slog.Level
-
-	// Response body control
-	IncludeDetails    bool // Developer-facing details (PII risk)
-	IncludeHints      bool // User-facing hints
-	IncludeIssueLinks bool // Bug tracker links
-	IncludeErrorCode  bool // Telemetry key as error code
-
-	// Error handling behavior
-	CreateBarrier   bool // Use Handled() to hide internal errors from clients
-	SanitizeMessage bool // Only show generic message for 500s
-}
-
-var DefaultHandleHTTPErrOpts = HandleHTTPErrOpts{
-	Logger:   slog.Default(),
-	LogLevel: slog.LevelError,
-
-	IncludeHints:      true,
-	IncludeIssueLinks: true,
-	IncludeErrorCode:  true,
-	SanitizeMessage:   true,
-}
-
-func HandleHTTPErr(
+func HandleHTTP(
 	ctx context.Context,
 	w http.ResponseWriter,
 	r *http.Request,
 	err error,
-	opts *HandleHTTPErrOpts,
+	opts ...LogErrOption,
 ) (handled bool) {
 	if err == nil {
 		return false
 	}
-
-	if opts == nil {
-		opts = &DefaultHandleHTTPErrOpts
+	config := DefaultLogErrOptions
+	for _, opt := range opts {
+		opt(&config)
 	}
-
 	status := GetHTTPCode(err)
-
-	resp := HTTPErrResponse{
-		Error: err.Error(),
+	httpAttrs := []any{
+		"method", r.Method,
+		"path", r.URL.Path,
+		"status", status,
+		"remote_addr", r.RemoteAddr,
 	}
 
-	if opts.SanitizeMessage && status >= 500 {
-		resp.Error = http.StatusText(status)
-	}
-	if opts.IncludeHints {
-		resp.Hints = errors.GetAllHints(err)
-	}
-	if opts.IncludeIssueLinks {
-		resp.Links = getIssueLinks(err)
-	}
+	LogErr(
+		ctx,
+		err,
+		append(opts, LogErrUseLoggerAttrs(
+			httpAttrs...,
+		))...,
+	)
 
-	respBytes, marshalErr := json.Marshal(resp)
-	if marshalErr != nil {
-		logMarshalErr := errors.Wrap(marshalErr, "failed to marshal HTTP error response")
-		LogErr(ctx, logMarshalErr,
-			LogErrUseLogger(opts.Logger),
-		)
-		w.WriteHeader(http.StatusInternalServerError)
+	message := http.StatusText(status)
+
+	var e *Error
+	if !errors.As(err, &e) {
+		config.Logger.Log(ctx, config.LogLevel, err.Error(), config.LoggerAttrs...)
+		http.Error(w, message, status)
 		return
 	}
 
-	LogErr(ctx, err,
-		LogErrUseLogger(opts.Logger),
-		LogErrUseLogLevel(opts.LogLevel),
-		LogErrUseLoggerArgs(
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", status,
-			"remote_addr", r.RemoteAddr,
-		),
-		LogErrUseLogDetails(true),
-		LogErrUseLogHints(false),
-	)
+	LogErr(ctx, err, append(opts, LogErrUseLoggerAttrs(httpAttrs...))...)
+
+	if e.SafeMessage != "" {
+		message = e.SafeMessage
+	} else if e.ExposeInternal {
+		message = e.Internal.Error()
+	}
+
+	resp, marshalErr := json.Marshal(ErrorHTTPResponse{
+		Message: message,
+		Details: e.UserDetails,
+	})
+	if marshalErr != nil {
+		config.Logger.ErrorContext(ctx,
+			fmt.Sprintf("failed to marshal error response: %v", marshalErr),
+			httpAttrs...,
+		)
+		w.WriteHeader(http.StatusInternalServerError)
+		return true
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if _, writeErr := w.Write(respBytes); writeErr != nil {
-		writeErr = errors.Wrap(writeErr, "failed to write error response body")
-		LogErr(ctx, writeErr,
-			LogErrUseLogger(opts.Logger),
+	if _, err = w.Write(resp); err != nil {
+		config.Logger.WarnContext(ctx,
+			fmt.Sprintf("failed to write error response: %v", err),
+			httpAttrs...,
 		)
 	}
 	return true

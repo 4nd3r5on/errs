@@ -1,31 +1,16 @@
 // Package errs provides opinionated error primitives and error handling
-// built on top of cockroachdb/errors.
 //
 // It defines a small set of canonical error values, maps them to HTTP semantics,
-// and exposes helpers for rendering safe, structured error responses while
-// preserving rich diagnostic context for logging and tracing.
+// and exposes helpers for rendering safe, structured error responses.
 package errs
 
 import (
-	"github.com/cockroachdb/errors"
+	"errors"
+	"fmt"
 )
 
-// IssueLink has the same structure as errors.IssueLink
-// but also has additional JSON tags
-type IssueLink struct {
-	// URL to the issue on a tracker.
-	IssueURL string `json:"issue_url"`
-	// Annotation that characterizes a sub-issue.
-	Detail string `json:"detail,omitempty"`
-}
-
 var (
-	ErrNotImplemented = errors.New("not implemented")
-	ErrInternal       = errors.New("internal error")
-
-	ErrCanceled         = errors.New("canceled")
-	ErrOOM              = errors.New("out of memory")
-	ErrDeadlineExceeded = errors.New("deadline exceeded")
+	ErrNotImplemented   = errors.New("not implemented")
 	ErrRemoteServiceErr = errors.New("remote service error")
 	ErrRateLimited      = errors.New("rate limited")
 
@@ -41,14 +26,59 @@ var (
 	ErrOutdated = errors.New("outdated")
 )
 
-func getIssueLinks(err error) []IssueLink {
-	links := errors.GetAllIssueLinks(err)
-	outLinks := make([]IssueLink, len(links))
-	for i, link := range links {
-		outLinks[i] = IssueLink{
-			IssueURL: link.IssueURL,
-			Detail:   link.Detail,
-		}
+type KVPair[K any, V any] struct {
+	Key K
+	Val V
+}
+
+type Error struct {
+	// Internal is the underlying cause.
+	// By being an 'error' type, it allows for %w wrapping and stack traces.
+	Internal error
+
+	// Whether or not show user external message if Message field is empty
+	ExposeInternal bool
+
+	// SafeMessage is the "Safe" human-readable message intended for the end-user.
+	SafeMessage string
+
+	// LogDetails contains data for slog.
+	LogDetails []any
+
+	// UserDetails gets marshaled to the JSON response and sent to the user
+	UserDetails any
+
+	// TraceID or Domain can be added here for "Marking" where the error originated.
+	Domain string
+}
+
+// Error implements the error interface.
+// Returns Internal error message
+func (e Error) Error() string {
+	return e.Internal.Error()
+}
+
+// Unwrap returns the underlying wrapped error to support errors.As and errors.Is.
+func (e Error) Unwrap() error {
+	return e.Internal
+}
+
+// Newf creates a new *Error with formatted internal message and optional wrapped error.
+// Usage examples:
+//
+//	Newf("something failed: %w", err) // wraps err
+//	Newf("simple error without wrapping")
+func Newf(internalMsgFmt string, args ...any) *Error {
+	return &Error{
+		Internal:   fmt.Errorf(internalMsgFmt, args...),
+		LogDetails: make([]any, 0),
 	}
-	return outLinks
+}
+
+// New creates a new *Error
+func New(internalMsg string) *Error {
+	return &Error{
+		Internal:   errors.New(internalMsg),
+		LogDetails: make([]any, 0),
+	}
 }
