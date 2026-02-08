@@ -29,9 +29,9 @@ var DefaultLogErrOptions = LogErrOptions{
 	LogSource:  true,
 }
 
-func LogErr(ctx context.Context, err error, opts ...LogErrOption) error {
+func LogErr(ctx context.Context, err error, opts ...LogErrOption) (errIsNotNil bool) {
 	if err == nil {
-		return err
+		return false
 	}
 
 	config := DefaultLogErrOptions
@@ -94,7 +94,7 @@ func LogErr(ctx context.Context, err error, opts ...LogErrOption) error {
 		loggerArgs...,
 	)
 
-	return err
+	return true
 }
 
 func LogErrUseLogger(logger *slog.Logger) LogErrOption {
