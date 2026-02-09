@@ -25,14 +25,18 @@ return errs.Newf("invalid user_id: %d", id)
 ### Structured errors
 
 ```go
-err := errs.Newf("user %s not found", userID)
-err.SafeMessage = "User not found"
-err.UserDetails = map[string]any{"user_id": userID}
-err.LogDetails = []any{
-    "attempted_id", userID,
-    "query_duration_ms", 42,
-}
-err.Domain = "users"
+// arguments of type errs.Option can modify error's internals
+// but they don't affect the formatting.
+// can be used with both errs.New and errs.Newf
+err := errs.Newf("user %s not found", userID, func(err *Error) {
+    err.SafeMessage = "User not found"
+    err.UserDetails = map[string]any{"user_id": userID}
+    err.LogDetails = []any{
+        "attempted_id", userID,
+        "query_duration_ms", 42,
+    }
+    err.Domain = "users"
+})
 return err
 ```
 
