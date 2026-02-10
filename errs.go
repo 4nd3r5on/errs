@@ -28,7 +28,7 @@ var (
 
 type Error struct {
 	// Internal is the underlying cause.
-	// By being an 'error' type, it allows for %w wrapping and stack traces.
+	// By being an 'error' type, it allows for %w wrapping.
 	Internal error
 
 	// Whether or not show user external message if Message field is empty
@@ -45,6 +45,9 @@ type Error struct {
 
 	// TraceID or Domain can be added here for "Marking" where the error originated.
 	Domain string
+
+	// Markers holds sentinel errors for errors.Is matching
+	Markers []error
 }
 
 // Error implements the error interface.
@@ -56,6 +59,18 @@ func (e *Error) Error() string {
 // Unwrap returns the underlying wrapped error to support errors.As and errors.Is.
 func (e *Error) Unwrap() error {
 	return e.Internal
+}
+
+// Is implements errors.Is matching for marked sentinel errors
+func (e *Error) Is(target error) bool {
+	// Check if target matches any marker
+	for _, m := range e.Markers {
+		if errors.Is(m, target) {
+			return true
+		}
+	}
+	// Fall back to unwrapping Internal
+	return errors.Is(e.Internal, target)
 }
 
 // Option can be provided in args to New and Newf
@@ -76,9 +91,17 @@ func Newf(internalMsgFmt string, args ...any) error {
 			opt(e)
 			continue
 		}
+		if opt, ok := arg.(func(*Error)); ok {
+			opt(e)
+			continue
+		}
 		cleanArgs = append(cleanArgs, arg)
 	}
+
 	e.Internal = fmt.Errorf(internalMsgFmt, cleanArgs...)
+	if e.Internal == nil {
+		return nil
+	}
 	return e
 }
 
@@ -93,4 +116,67 @@ func New(internalMsg string, opts ...Option) error {
 		opt(err)
 	}
 	return err
+}
+
+// Wrap wraps an error with additional context string.
+// Returns nil if err is nil.
+// Preserves original error for errors.Is/As.
+func Wrap(err error, msg string, opts ...Option) error {
+	if err == nil {
+		return nil
+	}
+
+	e := &Error{
+		Internal:   fmt.Errorf("%s: %w", msg, err),
+		LogDetails: make([]any, 0),
+	}
+
+	// Preserve markers if wrapping another *Error
+	if prev, ok := err.(*Error); ok {
+		e.Markers = prev.Markers
+		e.ExposeInternal = prev.ExposeInternal
+		e.SafeMessage = prev.SafeMessage
+		e.UserDetails = prev.UserDetails
+		e.Domain = prev.Domain
+		if prev.LogDetails != nil {
+			e.LogDetails = prev.LogDetails
+		}
+	}
+
+	for _, opt := range opts {
+		opt(e)
+	}
+
+	return e
+}
+
+// Mark marks an error with a sentinel error for errors.Is matching.
+// Returns nil if err is nil.
+// The original error message is preserved; marker is only for Is() matching.
+func Mark(err error, marker error, opts ...Option) error {
+	if err == nil {
+		return nil
+	}
+
+	e, ok := err.(*Error)
+	if !ok {
+		// Wrap foreign error into *Error
+		e = &Error{
+			Internal:   err,
+			LogDetails: make([]any, 0),
+			Markers:    []error{marker},
+		}
+	} else {
+		// Clone to avoid mutating original
+		clone := *e
+		clone.Markers = append([]error{}, e.Markers...)
+		clone.Markers = append(clone.Markers, marker)
+		e = &clone
+	}
+
+	for _, opt := range opts {
+		opt(e)
+	}
+
+	return e
 }
