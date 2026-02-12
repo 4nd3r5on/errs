@@ -3,7 +3,6 @@
 Opinionated error primitives for Go HTTP services. Maps canonical errors to HTTP semantics, structured logging, and safe JSON responses.
 
 ## Install
-
 ```bash
 go get github.com/4nd3r5on/errs
 ```
@@ -11,7 +10,6 @@ go get github.com/4nd3r5on/errs
 ## Usage
 
 ### Basic errors
-
 ```go
 // Canonical errors
 return errs.ErrNotFound
@@ -23,7 +21,6 @@ return errs.Newf("invalid user_id: %d", id)
 ```
 
 ### Structured errors
-
 ```go
 // arguments of type errs.Option can modify error's internals
 // but they don't affect the formatting.
@@ -40,8 +37,34 @@ err := errs.Newf("user %s not found", userID, func(err *Error) {
 return err
 ```
 
-### HTTP handling
+### Factory API
+```go
+// Explicit control over visibility and structure
+return errs.F().
+    Message("user query failed: %v", dbErr).
+    UserMessage("User not found").
+    Logs([]any{"user_id", id, "duration_ms", 42}).
+    Mark(dbErr).  // infers public/private from marked error's HTTP code
+    Domain("users").
+    Err()
 
+// Force visibility regardless of marked errors
+return errs.F().
+    Message("rate limit exceeded").
+    UserMessage("Too many requests").
+    Mark(errs.ErrRateLimited).
+    Private().  // lock as private (500) despite 429 marker
+    Err()
+
+// Minimal usage
+return errs.F().Message("db timeout").Mark(context.DeadlineExceeded).Err()
+```
+
+**Visibility inference**: `Mark()` auto-sets public if any marked error maps to `<500`. Override with `Private()`/`Public()`.
+
+**Immutability**: Each method returns a new factory instance. Safe to reuse base factories.
+
+### HTTP handling
 ```go
 func Handler(w http.ResponseWriter, r *http.Request) {
     user, err := getUser(ctx, id)
@@ -61,7 +84,6 @@ Response on error:
 ```
 
 ### Direct logging
-
 ```go
 errs.LogErr(ctx, err,
     errs.LogErrUseLogLevel(slog.LevelWarn),
@@ -91,3 +113,4 @@ errs.LogErr(ctx, err,
 - **Safe by default**: Internal errors hidden unless `ExposeInternal=true`
 - **Structured logging**: Attach arbitrary data for logs and JSON responses separately
 - **HTTP-aware**: Automatic status code mapping and JSON rendering
+- **Fluent factories**: Declarative error construction with visibility inference
