@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 )
 
@@ -37,6 +38,17 @@ func GetHTTPCode(err error) int {
 	}
 }
 
+func HTTPGetLogLevel(status int) slog.Level {
+	switch {
+	case status >= 500:
+		return slog.LevelError
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return slog.LevelWarn
+	default:
+		return slog.LevelDebug
+	}
+}
+
 type ErrorHTTPResponse struct {
 	Message string `json:"message"`
 	Details any    `json:"details,omitempty"`
@@ -52,11 +64,16 @@ func HandleHTTP(
 	if err == nil {
 		return false
 	}
-	config := DefaultLogErrOptions
+	status := GetHTTPCode(err)
+	config := LogErrOptions{
+		Logger:      slog.Default(),
+		LogLevel:    HTTPGetLogLevel(status),
+		LoggerAttrs: []any{},
+	}
+
 	for _, opt := range opts {
 		opt(&config)
 	}
-	status := GetHTTPCode(err)
 	httpAttrs := []any{
 		"method", r.Method,
 		"path", r.URL.Path,
