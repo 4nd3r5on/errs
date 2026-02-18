@@ -50,7 +50,7 @@ func HTTPGetLogLevel(status int) slog.Level {
 }
 
 type ErrorHTTPResponse struct {
-	Message string `json:"message"`
+	Error   string `json:"error"`
 	Details any    `json:"details,omitempty"`
 }
 
@@ -107,7 +107,7 @@ func HandleHTTP(
 	}
 
 	resp, marshalErr := json.Marshal(ErrorHTTPResponse{
-		Message: message,
+		Error:   message,
 		Details: e.UserDetails,
 	})
 	if marshalErr != nil {
