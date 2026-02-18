@@ -51,7 +51,6 @@ return errs.F().
 // Force visibility regardless of marked errors
 return errs.F().
     Message("rate limit exceeded").
-    UserMessage("Too many requests").
     Mark(errs.ErrRateLimited).
     Private().  // lock as private (500) despite 429 marker
     Err()
@@ -78,7 +77,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 Response on error:
 ```json
 {
-  "message": "User not found",
+  "error": "User not found",
   "details": {"user_id": "123"}
 }
 ```
